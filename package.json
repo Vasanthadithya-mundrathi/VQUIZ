@@ -1,0 +1,15 @@
+{
+  "name": "v-quiz",
+  "version": "1.0.0",
+  "description": "Interactive multiplayer quiz application",
+  "scripts": {
+    "client": "cd client && npm run dev",
+    "server": "cd server && node src/app.js",
+    "seed": "cd server && node src/seed.js",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "setup": "concurrently \"cd client && npm install\" \"cd server && npm install\" && npm install"
+  },
+  "dependencies": {
+    "concurrently": "^8.0.1"
+  }
+}
