@@ -5,23 +5,22 @@ const User = require('../models/User');
 // Register a new user
 router.post('/register', async (req, res) => {
   try {
-    // Check if user already exists
-    const existingUser = await User.findOne({ name: req.body.name });
-    
-    if (existingUser) {
-      // If user exists, return a 409 Conflict status code
-      return res.status(409).json({ 
-        message: 'This name is already taken. Please choose another one.'
-      });
+    const { name } = req.body;
+    let user = await User.findOne({ name });
+
+    if (user) {
+      return res.json({ user }); // Return existing user
     }
-    
-    // Otherwise, create a new user
-    const user = new User({
-      name: req.body.name
+
+    user = new User({
+      name,
+      totalScore: 0,
+      gamesPlayed: 0,
+      quizzesTaken: []
     });
+
     await user.save();
-    
-    res.status(201).json(user);
+    res.status(201).json({ user });
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
@@ -31,20 +30,14 @@ router.post('/register', async (req, res) => {
 router.get('/:name/stats', async (req, res) => {
   try {
     const user = await User.findOne({ name: req.params.name })
-      .populate('quizzesTaken.quiz', 'title')
-      .populate('quizzesCreated', 'title');
-    
+      .populate('quizzesTaken.quiz')
+      .populate('quizzesCreated');
+
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    res.json({
-      totalScore: user.totalScore,
-      gamesPlayed: user.gamesPlayed,
-      quizzesTaken: user.quizzesTaken,
-      quizzesCreated: user.quizzesCreated,
-      averageScore: user.gamesPlayed > 0 ? user.totalScore / user.gamesPlayed : 0
-    });
+    res.json(user);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -53,45 +46,86 @@ router.get('/:name/stats', async (req, res) => {
 // Update user score
 router.post('/:name/score', async (req, res) => {
   try {
+    const { quizId, score } = req.body;
+    const user = await User.findOne({ name: req.params.name });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Update quiz-specific stats
+    const existingQuizStat = user.quizStats.find(
+      stat => stat.quiz.toString() === quizId
+    );
+
+    if (existingQuizStat) {
+      existingQuizStat.totalScore += score;
+      existingQuizStat.attempts += 1;
+      existingQuizStat.lastPlayed = new Date();
+      if (score > existingQuizStat.highestScore) {
+        existingQuizStat.highestScore = score;
+      }
+    } else {
+      user.quizStats.push({
+        quiz: quizId,
+        highestScore: score,
+        totalScore: score,
+        attempts: 1,
+        lastPlayed: new Date()
+      });
+    }
+
+    // Update overall stats
+    user.totalScore += score;
+    user.gamesPlayed += 1;
+
+    // Add to quizzesTaken array
+    user.quizzesTaken.push({
+      quiz: quizId,
+      score: score,
+      completedAt: new Date()
+    });
+
+    await user.save();
+    res.json(user);
+  } catch (error) {
+    console.error('Error updating user score:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get user's quiz history
+router.get('/:name/history', async (req, res) => {
+  try {
+    const user = await User.findOne({ name: req.params.name })
+      .populate('quizzesTaken.quiz', 'title description');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const history = user.quizzesTaken.map(attempt => ({
+      quiz: attempt.quiz,
+      score: attempt.score,
+      completedAt: attempt.completedAt
+    }));
+
+    res.json(history);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get quiz-specific stats for a user
+router.get('/:name/stats/:quizId', async (req, res) => {
+  try {
     const user = await User.findOne({ name: req.params.name });
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const { quizId, score } = req.body;
-
-    // Add quiz to taken list
-    user.quizzesTaken.push({
-      quiz: quizId,
-      score,
-      completedAt: new Date()
-    });
-
-    // Update total score and games played
-    user.totalScore += score;
-    user.gamesPlayed += 1;
-
-    await user.save();
-    res.json(user);
-  } catch (error) {
-    res.status(400).json({ message: error.message });
-  }
-});
-
-// Get leaderboard
-router.get('/leaderboard', async (req, res) => {
-  try {
-    const leaderboard = await User.find()
-      .sort({ totalScore: -1 })
-      .limit(100)
-      .select('name totalScore gamesPlayed -_id');
-
-    res.json(leaderboard.map(user => ({
-      playerName: user.name,
-      totalScore: user.totalScore,
-      gamesPlayed: user.gamesPlayed,
-      averageScore: user.gamesPlayed > 0 ? user.totalScore / user.gamesPlayed : 0
-    })));
+    const stats = user.getQuizStats(req.params.quizId);
+    res.json(stats);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

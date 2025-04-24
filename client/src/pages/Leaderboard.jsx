@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { userApi } from '../services/api'
+import { userApi, quizApi, gameApi } from '../services/api'
 
 function Leaderboard() {
   const navigate = useNavigate()
   const playerName = localStorage.getItem('playerName')
-  const [timeFilter, setTimeFilter] = useState('all')
+  const [selectedQuiz, setSelectedQuiz] = useState('global')
 
   // Redirect to welcome page if no player name
   if (!playerName) {
@@ -14,11 +14,26 @@ function Leaderboard() {
     return null
   }
 
-  const { data: leaderboard, isLoading } = useQuery({
-    queryKey: ['leaderboard', timeFilter],
+  // Fetch available quizzes
+  const { data: quizzes } = useQuery({
+    queryKey: ['quizzes'],
     queryFn: async () => {
-      const response = await userApi.getLeaderboard(timeFilter)
+      const response = await quizApi.getAll()
       return response.data
+    }
+  })
+
+  // Fetch leaderboard data based on selection
+  const { data: leaderboard, isLoading } = useQuery({
+    queryKey: ['leaderboard', selectedQuiz],
+    queryFn: async () => {
+      if (selectedQuiz === 'global') {
+        const response = await gameApi.getLeaderboard()
+        return response.data
+      } else {
+        const response = await gameApi.getLeaderboard(selectedQuiz)
+        return response.data
+      }
     }
   })
 
@@ -44,13 +59,6 @@ function Leaderboard() {
     }
   }
 
-  const filterButtons = [
-    { label: 'All Time', value: 'all' },
-    { label: 'This Month', value: 'month' },
-    { label: 'This Week', value: 'week' },
-    { label: 'Today', value: 'today' }
-  ]
-
   if (isLoading) {
     return (
       <div className="flex justify-center items-center min-h-[60vh]">
@@ -65,26 +73,25 @@ function Leaderboard() {
         <div className="p-6 md:p-8 text-center border-b bg-gradient-to-r from-blue-500 to-blue-600">
           <h1 className="text-3xl font-bold text-white mb-2">Leaderboard</h1>
           <p className="text-blue-100">
-            Top quiz masters showcasing their knowledge
+            {selectedQuiz === 'global' 
+              ? 'Overall rankings across all quizzes'
+              : `Rankings for ${quizzes?.find(q => q._id === selectedQuiz)?.title || 'selected quiz'}`}
           </p>
         </div>
 
         <div className="p-4 bg-gray-50 border-b">
-          <div className="flex flex-wrap justify-center gap-2">
-            {filterButtons.map(({ label, value }) => (
-              <button
-                key={value}
-                onClick={() => setTimeFilter(value)}
-                className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
-                  timeFilter === value
-                    ? 'bg-blue-100 text-blue-800'
-                    : 'bg-white text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {label}
-              </button>
+          <select
+            value={selectedQuiz}
+            onChange={(e) => setSelectedQuiz(e.target.value)}
+            className="input w-full max-w-md mx-auto block"
+          >
+            <option value="global">Global Leaderboard</option>
+            {quizzes?.map(quiz => (
+              <option key={quiz._id} value={quiz._id}>
+                {quiz.title}
+              </option>
             ))}
-          </div>
+          </select>
         </div>
 
         <div className="p-6">
@@ -118,7 +125,7 @@ function Leaderboard() {
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-bold text-blue-600">
-                    {entry.totalScore}
+                    {selectedQuiz === 'global' ? entry.totalScore : entry.highestScore}
                   </div>
                   <div className="text-sm text-gray-500">
                     avg: {Math.round(entry.averageScore)}
@@ -145,20 +152,20 @@ function Leaderboard() {
 
         <div className="p-6 bg-blue-50">
           <h2 className="text-lg font-semibold text-blue-900 mb-4">
-            How Scores are Calculated
+            Scoring System
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="p-4 bg-white rounded-lg shadow-sm">
               <div className="font-medium text-blue-800 mb-2">Base Points</div>
-              <p className="text-gray-600">10 points for each correct answer</p>
+              <p className="text-gray-600">10 points per correct answer</p>
             </div>
             <div className="p-4 bg-white rounded-lg shadow-sm">
               <div className="font-medium text-blue-800 mb-2">Speed Bonus</div>
-              <p className="text-gray-600">Up to 10 extra points for quick answers</p>
+              <p className="text-gray-600">Up to 10 extra points for fast answers</p>
             </div>
             <div className="p-4 bg-white rounded-lg shadow-sm">
               <div className="font-medium text-blue-800 mb-2">Streak Bonus</div>
-              <p className="text-gray-600">Extra points for consecutive correct answers</p>
+              <p className="text-gray-600">Up to 5 points for answer streaks</p>
             </div>
           </div>
         </div>

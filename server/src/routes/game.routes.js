@@ -1,54 +1,113 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Game = require('../models/Game');
 const User = require('../models/User');
 const Quiz = require('../models/Quiz');
 
-// Get leaderboard
-router.get('/leaderboard/:timeFilter', async (req, res) => {
+// Get leaderboard by quiz ID
+router.get('/leaderboard/:quizId', async (req, res) => {
   try {
-    const timeFilter = req.params.timeFilter || 'all';
-    let dateFilter = {};
-
-    const now = new Date();
-    switch (timeFilter) {
-      case 'today':
-        dateFilter = {
-          createdAt: {
-            $gte: new Date(now.setHours(0, 0, 0, 0))
-          }
-        };
-        break;
-      case 'week':
-        dateFilter = {
-          createdAt: {
-            $gte: new Date(now.setDate(now.getDate() - 7))
-          }
-        };
-        break;
-      case 'month':
-        dateFilter = {
-          createdAt: {
-            $gte: new Date(now.setMonth(now.getMonth() - 1))
-          }
-        };
-        break;
+    const quizId = req.params.quizId;
+    
+    // First verify the quiz exists
+    const quiz = await Quiz.findById(quizId);
+    if (!quiz) {
+      return res.status(404).json({ message: 'Quiz not found' });
     }
 
-    const users = await User.find()
-      .sort({ totalScore: -1 })
-      .limit(100)
-      .select('name totalScore gamesPlayed -_id');
+    const quizObjectId = new mongoose.Types.ObjectId(quizId);
 
-    const leaderboard = users.map(user => ({
-      playerName: user.name,
-      totalScore: user.totalScore,
-      gamesPlayed: user.gamesPlayed,
-      averageScore: user.gamesPlayed > 0 ? Math.round(user.totalScore / user.gamesPlayed) : 0
-    }));
+    const leaderboard = await User.aggregate([
+      // Match users who have played this quiz
+      {
+        $match: {
+          'quizStats.quiz': quizObjectId
+        }
+      },
+      // Unwind quizStats array
+      {
+        $unwind: '$quizStats'
+      },
+      // Match the specific quiz
+      {
+        $match: {
+          'quizStats.quiz': quizObjectId
+        }
+      },
+      // Project required fields
+      {
+        $project: {
+          playerName: '$name',
+          highestScore: '$quizStats.highestScore',
+          totalScore: '$quizStats.totalScore',
+          gamesPlayed: '$quizStats.attempts',
+          averageScore: {
+            $round: [
+              { $divide: ['$quizStats.totalScore', '$quizStats.attempts'] },
+              0
+            ]
+          }
+        }
+      },
+      // Sort by highest score
+      {
+        $sort: {
+          highestScore: -1
+        }
+      },
+      // Limit to top 100
+      {
+        $limit: 100
+      }
+    ]);
 
     res.json(leaderboard);
   } catch (error) {
+    console.error('Leaderboard error:', error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get global leaderboard
+router.get('/leaderboard', async (req, res) => {
+  try {
+    const leaderboard = await User.aggregate([
+      // Match users who have played at least one game
+      {
+        $match: {
+          gamesPlayed: { $gt: 0 }
+        }
+      },
+      // Project required fields
+      {
+        $project: {
+          playerName: '$name',
+          totalScore: 1,
+          gamesPlayed: 1,
+          averageScore: {
+            $round: [
+              { $divide: ['$totalScore', '$gamesPlayed'] },
+              0
+            ]
+          }
+        }
+      },
+      // Sort by total score
+      {
+        $sort: {
+          totalScore: -1
+        }
+      },
+      // Limit to top 100
+      {
+        $limit: 100
+      }
+    ]);
+
+    res.json(leaderboard);
+  } catch (error) {
+    console.error('Global leaderboard error:', error);
     res.status(500).json({ message: error.message });
   }
 });
@@ -71,6 +130,7 @@ router.post('/', async (req, res) => {
     const newGame = await game.save();
     res.status(201).json(newGame);
   } catch (error) {
+    console.error('Create game error:', error);
     res.status(400).json({ message: error.message });
   }
 });
@@ -78,7 +138,6 @@ router.post('/', async (req, res) => {
 // Submit final score
 router.post('/:id/submit', async (req, res) => {
   try {
-    // Update game
     const game = await Game.findById(req.params.id);
     if (!game) {
       return res.status(404).json({ message: 'Game not found' });
@@ -86,43 +145,67 @@ router.post('/:id/submit', async (req, res) => {
 
     const { playerName, score } = req.body;
 
+    // Find user or create a new one
+    let user = await User.findOne({ name: playerName });
+    if (!user) {
+      user = new User({
+        name: playerName,
+        totalScore: score,
+        gamesPlayed: 1,
+        quizStats: [{
+          quiz: game.quizId,
+          highestScore: score,
+          totalScore: score,
+          attempts: 1,
+          lastPlayed: new Date()
+        }]
+      });
+    } else {
+      // Update user stats
+      user.totalScore += score;
+      user.gamesPlayed += 1;
+      
+      // Update quiz-specific stats
+      const quizStat = user.quizStats.find(
+        stat => stat.quiz.toString() === game.quizId.toString()
+      );
+
+      if (quizStat) {
+        quizStat.totalScore += score;
+        quizStat.attempts += 1;
+        quizStat.lastPlayed = new Date();
+        if (score > quizStat.highestScore) {
+          quizStat.highestScore = score;
+        }
+      } else {
+        user.quizStats.push({
+          quiz: game.quizId,
+          highestScore: score,
+          totalScore: score,
+          attempts: 1,
+          lastPlayed: new Date()
+        });
+      }
+    }
+
+    // Save user first
+    await user.save();
+
+    // Update game
     game.players.push({
       name: playerName,
       score: score,
-      completed: true
+      completed: true,
+      completedAt: new Date()
     });
 
     game.status = 'completed';
     game.endedAt = new Date();
     await game.save();
 
-    // Update user stats
-    let user = await User.findOne({ name: playerName });
-    
-    if (!user) {
-      user = new User({
-        name: playerName,
-        totalScore: score,
-        gamesPlayed: 1,
-        quizzesTaken: [{
-          quiz: game.quizId,
-          score: score,
-          completedAt: new Date()
-        }]
-      });
-    } else {
-      user.totalScore += score;
-      user.gamesPlayed += 1;
-      user.quizzesTaken.push({
-        quiz: game.quizId,
-        score: score,
-        completedAt: new Date()
-      });
-    }
-
-    await user.save();
-    res.json(game);
+    res.json({ game, user });
   } catch (error) {
+    console.error('Submit score error:', error);
     res.status(400).json({ message: error.message });
   }
 });
@@ -136,6 +219,7 @@ router.get('/:id', async (req, res) => {
     }
     res.json(game);
   } catch (error) {
+    console.error('Get game error:', error);
     res.status(500).json({ message: error.message });
   }
 });
